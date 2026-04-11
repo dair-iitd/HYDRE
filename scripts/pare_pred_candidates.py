@@ -111,7 +111,7 @@ def main() -> None:
         framework_.test_loader = test_loader
 
         ckpt_obj = torch.load(args.ckpt, map_location=device)
-        framework_.model.module.load_state_dict(ckpt_obj["state_dict"])
+        framework_.load_state_dict(ckpt_obj["state_dict"])
 
         framework_.model.eval()
 
@@ -131,8 +131,8 @@ def main() -> None:
                 bag_name = data[1]
                 token, mask = data[2].squeeze(1), data[3].squeeze(1)
 
-                # PassageAttention model takes (token, mask)
-                scores = framework_.model(token, mask)
+                # PassageAttention model takes (token, mask, train)
+                scores = framework_.model(token, mask, False)
 
                 for b in range(scores.shape[0]):
                     hid, tid = bag_name[b][:2]

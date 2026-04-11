@@ -148,12 +148,12 @@ def get_pare_scores_pare(data_file):
         model=model_,
         train_path=None, val_path=None, test_path=data_file,
         ckpt=PARE_CKPT, batch_size=BATCH_SIZE, max_epoch=1,
-        lr=2e-5, weight_decay=1e-5, opt='adamw', units=0, devices=[0]
+        lr=2e-5, weight_decay=1e-5, opt='adamw', warmup_step=0, devices=[0]
     )
     
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     ckpt_obj = torch.load(PARE_CKPT, map_location=device)
-    framework_.model.module.load_state_dict(ckpt_obj['state_dict'])
+    framework_.load_state_dict(ckpt_obj['state_dict'])
     framework_.model.eval()
     
     pred_result = []
@@ -165,10 +165,12 @@ def get_pare_scores_pare(data_file):
                     except: pass
             bag_name = data[1]
             token, mask = data[2].squeeze(1), data[3].squeeze(1)
-            logits = framework_.model(token, mask)
+            logits = framework_.model(token, mask, False)
             for b in range(logits.shape[0]):
-                for relid in range(logits.shape[1]):
-                    rel = framework_.model.module.id2rel[relid]
+                num_class = framework_.model.module.num_class if hasattr(framework_.model, 'module') else framework_.model.num_class
+                id2rel = framework_.model.module.id2rel if hasattr(framework_.model, 'module') else framework_.model.id2rel
+                for relid in range(num_class):
+                    rel = id2rel[relid]
                     if rel == 'NA': continue
                     pred_result.append({'entpair': bag_name[b][:2], 'relation': rel, 'score': logits[b][relid].item()})
     

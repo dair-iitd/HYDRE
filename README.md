@@ -10,6 +10,8 @@ HYDRE operates in 4 distinct stages:
 3. **Stage 3 (Sentence Selection)**: Select the best representative sentence from each retrieved bag.
 4. **Stage 4 (Inference)**: Perform few-shot prompting with an LLM (e.g., GPT-4) using the selected examples.
 
+> **Testing Status**: The NYT10m pipeline (Stages 1-3) has been end-to-end verified on both CUDA and Mac (CPU) environments. Stage 4 uses the OpenAI API and is configured to run out-of-the-box.
+
 ---
 
 ## 🛠 Setup
@@ -103,5 +105,6 @@ Simply swap the paths in each command:
 
 ## ⚠️ Notes
 - **Stage 1 Backend**: This implementation uses the standalone `PARE` codebase for candidate generation.
-- **Paths**: All paths in scripts have been refactored to be relative to the project root.
-- **API**: Ensure you have a `.env` file with necessary API keys for Stage 4.
+- **Mac/CPU Compatibility**: The framework has been patched to support non-CUDA devices (CPU/MPS), though CPU is recommended for stability.
+- **Wiki20m Checkpoint**: Stage 1 for Wiki20m requires a checkpoint that matches the Wiki20m `rel2id` count (80 relations). Using the NYT checkpoint for Wiki will result in a size mismatch error.
+- **API Keys**: Ensure you have a `.env` file with `OPENAI_API_KEY` or `TOGETHER_API_KEY`.

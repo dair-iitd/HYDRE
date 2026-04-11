@@ -262,7 +262,7 @@ class PassageREDataset(data.Dataset):
         return {'np_prec': np_prec, 'np_rec': np_rec, 'max_micro_f1': max_micro_f1, 'max_macro_f1': max_macro_f1, 'auc': auc, 'p@100': np_prec[99], 'p@200': np_prec[199], 'p@300': np_prec[299], 'avg_p300': (np_prec[99] + np_prec[199] + np_prec[299]) / 3, 'micro_f1': micro_f1, 'macro_f1': macro_f1, 'max_micro_f1_each_relation': max_micro_f1_each_relation, 'recall@5_micro': recall_at_5_micro, 'recall@5_macro': recall_at_5_macro, 'pred':entpair}
 
 
-def PassageRELoader(path, rel2id, tokenizer, batch_size, shuffle, num_workers=1):
+def PassageRELoader(path, rel2id, tokenizer, batch_size, shuffle, num_workers=0):
     collate_fn = PassageREDataset.collate_bag_size_fn
     dataset = PassageREDataset(path, rel2id, tokenizer)
     data_loader = data.DataLoader(dataset=dataset,

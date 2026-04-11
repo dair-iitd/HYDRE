@@ -54,8 +54,16 @@ class PassageRE(nn.Module):
         else:
             self.test_loader = None
         # Model
-        self.device=torch.device('cuda:{}'.format(devices[0]))
-        self.model = nn.DataParallel(model, device_ids=devices)
+        if torch.cuda.is_available():
+            self.device = torch.device('cuda:{}'.format(devices[0]))
+            self.model = nn.DataParallel(model, device_ids=devices)
+        # elif torch.backends.mps.is_available():
+        #     self.device = torch.device('mps')
+        #     self.model = model 
+        else:
+            self.device = torch.device('cpu')
+            self.model = model
+
         self.model.to(self.device)
         self.criterion = torch.nn.BCELoss(reduction='sum')
         # Params and optimizer
@@ -175,13 +183,18 @@ class PassageRE(nn.Module):
                 logits = self.model(token, mask, False)
                 
                 for i in range(logits.shape[0]):
-                    for relid in range(self.model.module.num_class):
-                    	if self.model.module.id2rel[relid] != 'NA':
-                            pred_result.append({'entpair': bag_name[i][:2], 'relation': self.model.module.id2rel[relid],'score': logits[i][relid].item()})
+                    num_class = self.model.module.num_class if hasattr(self.model, 'module') else self.model.num_class
+                    id2rel = self.model.module.id2rel if hasattr(self.model, 'module') else self.model.id2rel
+                    for relid in range(num_class):
+                    	if id2rel[relid] != 'NA':
+                            pred_result.append({'entpair': bag_name[i][:2], 'relation': id2rel[relid],'score': logits[i][relid].item()})
                     	#pred_result.append({'entpair': bag_name[i][:2], 'relation': self.model.module.id2rel[relid],
                        #                       'score': logits[i][relid].item()})
             result = eval_loader.dataset.eval(pred_result)
         return result
 
     def load_state_dict(self, state_dict):
-        self.model.module.load_state_dict(state_dict)
+        if hasattr(self.model, 'module'):
+            self.model.module.load_state_dict(state_dict)
+        else:
+            self.model.load_state_dict(state_dict)
