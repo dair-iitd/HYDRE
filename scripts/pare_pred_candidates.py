@@ -19,15 +19,19 @@ def _to_pare_instances(query_jsonl_path: str, rel_default: str = "NA") -> Tuple[
                 continue
             d = json.loads(line)
             text = d["text"]
-            hpos = d["hpos"]
-            tpos = d["tpos"]
+            if "hpos" in d and "tpos" in d:
+                hpos = d["hpos"]
+                tpos = d["tpos"]
+            else:
+                hpos = d["h"]["pos"]
+                tpos = d["t"]["pos"]
 
             hid = str(i * 2)
             tid = str(i * 2 + 1)
 
             inst = {
                 "text": text,
-                "relation": rel_default,
+                "relation": d.get("relation", rel_default),
                 "h": {"pos": hpos, "id": hid, "name": text[hpos[0] : hpos[1]]},
                 "t": {"pos": tpos, "id": tid, "name": text[tpos[0] : tpos[1]]},
             }
@@ -55,6 +59,16 @@ def main() -> None:
     parser.add_argument("--device", default="cuda:0")
 
     args = parser.parse_args()
+
+    ckpt_path = os.path.abspath(os.path.expanduser(args.ckpt))
+    if not os.path.exists(ckpt_path):
+        raise SystemExit(
+            "Missing PARE checkpoint.\n"
+            f"Expected at: {ckpt_path}\n\n"
+            "Download the trained checkpoint from the DSRE repo (Google Drive link) and place it at the path above, "
+            "or rerun this script with --ckpt /path/to/checkpoint.pth.tar\n"
+            "DSRE: https://github.com/dair-iitd/DSRE\n"
+        )
 
     pare_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "PARE"))
     sys.path.insert(0, pare_path)
@@ -110,7 +124,7 @@ def main() -> None:
         )
         framework_.test_loader = test_loader
 
-        ckpt_obj = torch.load(args.ckpt, map_location=device)
+        ckpt_obj = torch.load(ckpt_path, map_location=device)
         framework_.load_state_dict(ckpt_obj["state_dict"])
 
         framework_.model.eval()

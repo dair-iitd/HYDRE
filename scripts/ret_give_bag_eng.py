@@ -57,6 +57,13 @@ BATCH_SIZE = 16
 TOPK = 5
 LANG = "en"  # don't change without proper understanding
 
+# Runtime controls (overridden by CLI)
+NUM_WORKERS = None
+MAX_TRAIN_LINES = None
+MAX_QUERY_LINES = None
+RETRIEVAL_BATCH_SIZE = 1000
+NER_DEVICE = None
+
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
@@ -194,7 +201,7 @@ def compute_bertscore_for_query(queries, doc_bags):
 
     # Prepare training sentences and create PARE data file
     train_sents = []
-    data_file = f"pare_data_{LANG}_example_bags.jsonl"
+    data_file = f"pare_data_{LANG}_example_bags_{len(doc_bags)}.jsonl"
     idx = 0
 
     # Create PARE data file
@@ -212,23 +219,69 @@ def compute_bertscore_for_query(queries, doc_bags):
                 for rel in rels:
                     doc["relation"] = rel
                     f.write(json.dumps(doc)+"\n")
-    
-    # Compute PARE scores
-    pare_scores = get_pare_scores(data_file)
+
+    pare_scores_path = f"pare_scores_{LANG}_notnorm_example_bags_{len(doc_bags)}.pt"
+    if os.path.exists(pare_scores_path):
+        pare_scores = torch.load(pare_scores_path, map_location="cpu")
+    else:
+        pare_scores = get_pare_scores(data_file)
+        torch.save(pare_scores, pare_scores_path)
     print("PARE scores shape: ", pare_scores.shape)
-    
-    # Save PARE scores for later use
-    torch.save(pare_scores, f"pare_scores_{LANG}_notnorm_example_bags.pt")
+    pare_scores = max_min_normalize(pare_scores, dim=0)
 
-    print(len(train_sents), len(doc_bags))
+    if MASK:
+        tokenizer_ner = AutoTokenizer.from_pretrained("dslim/bert-base-NER")
+        model_ner = AutoModelForTokenClassification.from_pretrained("dslim/bert-base-NER")
+        if NER_DEVICE is not None:
+            ner_device = int(NER_DEVICE)
+        else:
+            ner_device = 0 if torch.cuda.is_available() else -1
+        ner = pipeline('ner', model=model_ner, tokenizer=tokenizer_ner, device=ner_device)
 
-    # Initialize score tensors
-    sent_scores = torch.zeros((len(queries), len(train_sents)))
-    
-    # Normalize and reshape scores
-    sent_scores = max_min_normalize(sent_scores, dim=1).repeat_interleave(25, dim=1).view(len(queries), len(train_sents), 25)
-    
-    # Add PARE scores
+        def _mask_sents(sents):
+            masked = list(sents)
+            for i in tqdm(range(0, len(masked), BATCH_SIZE), desc="Masking entities"):
+                batch = masked[i:i+BATCH_SIZE]
+                ner_res = ner(batch, batch_size=BATCH_SIZE)
+                for j in range(len(batch)):
+                    idxs = []
+                    for ent in ner_res[j]:
+                        if ent.get("entity") == "O":
+                            continue
+                        idxs.append((ent["start"], ent["end"]))
+                    idxs = sorted(idxs, key=lambda x: x[0])
+                    diff = 0
+                    sent = batch[j]
+                    for start0, end0 in idxs:
+                        start = start0 + diff
+                        end = end0 + diff
+                        sent = sent[:start] + MASK_TOKEN + sent[end:]
+                        diff += len(MASK_TOKEN) - (end - start)
+                    masked[i + j] = sent
+            return masked
+
+        train_sents = _mask_sents(train_sents)
+        queries = _mask_sents(queries)
+
+    query_pref = "query: "
+    train_sents = [(query_pref + sent) for sent in train_sents]
+    queries = [(query_pref + sent) for sent in queries]
+
+    doc_embs = np.zeros((len(train_sents), ret_model_hidden_size), dtype=np.float32)
+    for j in tqdm(range(0, len(train_sents), BATCH_SIZE), desc="Computing document embeddings"):
+        batch = train_sents[j:j+BATCH_SIZE]
+        doc_embs[j:j+BATCH_SIZE] = ret_model.encode(batch, normalize_embeddings=True)
+
+    query_embs = np.zeros((len(queries), ret_model_hidden_size), dtype=np.float32)
+    for i in tqdm(range(0, len(queries), BATCH_SIZE), desc="Computing query embeddings"):
+        batch = queries[i:i+BATCH_SIZE]
+        query_embs[i:i+BATCH_SIZE] = ret_model.encode(batch, normalize_embeddings=True)
+
+    sent_scores = torch.from_numpy(query_embs @ doc_embs.T)
+
+    sent_scores = max_min_normalize(sent_scores, dim=1)
+    num_relations = pare_scores.shape[1]
+    sent_scores = sent_scores.repeat_interleave(num_relations, dim=1).view(len(queries), len(train_sents), num_relations)
     sent_scores = sent_scores + pare_scores
     print("After adding PARE scores, sent_scores shape: ", sent_scores.shape)
 
@@ -252,7 +305,9 @@ def best_for_a_slot(bert_scores, j, gr_id, doc_bags, rel):
                 break
         if flag == 1:
             return s[0]
-    return None
+    # Fallback: if no bag explicitly contains the relation (can happen on small subsets),
+    # return the best-scoring bag for this relation id.
+    return sorted_sets[0][0] if sorted_sets else None
 
 def retrieve_top_k_sets_helper1(queries, doc_bags, k, idpredrep, rel2id, idx):
     """Helper function to compute and save BERT scores"""
@@ -279,7 +334,8 @@ def retrieve_top_k_sets_helper2(queries, doc_bags, k, idpredrep, rel2id, idx):
 
     # Parallel processing using multiprocessing
     start_time = time.time()
-    with Pool(cpu_count()) as p:
+    n_workers = cpu_count() if (NUM_WORKERS is None or NUM_WORKERS <= 0) else min(cpu_count(), NUM_WORKERS)
+    with Pool(n_workers) as p:
         results = p.starmap(best_for_a_slot, [(bert_scores, j, gr_id, doc_bags, id2rel[gr_id]) for j, gr_id in sort_order])
     print("Time taken for parallel processing: ", time.time()-start_time)
 
@@ -292,8 +348,18 @@ def retrieve_top_k_sets_helper2(queries, doc_bags, k, idpredrep, rel2id, idx):
                 continue
             gr_id = rel2id[gr]
             best_bag_idx = results[j*k+j2]
+            if best_bag_idx is None:
+                best_bag_idx = int(torch.argmax(bert_scores[j, :, gr_id]).item())
             bg = copy.deepcopy(doc_bags[best_bag_idx])
             top_sets.append(bg)
+
+        # If we skipped relations (missing from rel2id), pad with best overall bags.
+        if len(top_sets) < k:
+            best_overall = torch.argsort(torch.max(bert_scores[j], dim=1).values, descending=True)
+            for cand_idx in best_overall.tolist():
+                if len(top_sets) >= k:
+                    break
+                top_sets.append(copy.deepcopy(doc_bags[int(cand_idx)]))
         
         assert len(top_sets) == k, f"Top sets length mismatch: {len(top_sets)} != {k}"
         all_sents.append(top_sets)
@@ -305,7 +371,7 @@ def retrieve_top_k_sets(queries, doc_bags, k, idpredrep, rel2id):
     Main function to retrieve top-k document sets for each query
     """
     all_sents = []
-    batch_size = 1000
+    batch_size = RETRIEVAL_BATCH_SIZE
     
     # First, compute and save BERT scores for all batches
     print("Computing BERT scores for all batches...")
@@ -335,8 +401,18 @@ if __name__ == "__main__":
     parser.add_argument("--out_dir", type=str, default=os.path.join(ROOT_DIR, "nyt10m"))
     parser.add_argument("--pare_top_file", type=str, default=os.path.join(ROOT_DIR, "nyt10m", "opennre_ckpt3_candidates_all_rels.jsonl"))
     parser.add_argument("--rel2id_path", type=str, default=os.path.join(ROOT_DIR, "nyt10m", "nyt10m_rel2id.json"))
+    parser.add_argument("--pare_ckpt", type=str, default=PARE_CKPT, help="PARE checkpoint used inside Stage 2 for scoring (defaults to config PARE_CKPT)")
     parser.add_argument("--lang", type=str, default="en")
     parser.add_argument("--topk", type=int, default=5)
+    parser.add_argument("--batch_size", type=int, default=BATCH_SIZE)
+    parser.add_argument("--retrieval_batch_size", type=int, default=RETRIEVAL_BATCH_SIZE)
+    parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--max_train_lines", type=int, default=0)
+    parser.add_argument("--max_query_lines", type=int, default=0)
+    parser.add_argument("--mask", action="store_true")
+    parser.add_argument("--no-mask", dest="mask", action="store_false")
+    parser.set_defaults(mask=MASK)
+    parser.add_argument("--ner_device", type=int, default=None, help="HF pipeline device for NER masking (e.g. 0, 1, or -1 for CPU)")
     
     args = parser.parse_args()
     
@@ -348,9 +424,16 @@ if __name__ == "__main__":
     REL2ID_PATH = args.rel2id_path
     LANG = args.lang
     TOPK = args.topk
+    BATCH_SIZE = args.batch_size
+    RETRIEVAL_BATCH_SIZE = args.retrieval_batch_size
+    NUM_WORKERS = args.num_workers if args.num_workers else None
+    MAX_TRAIN_LINES = args.max_train_lines if args.max_train_lines else None
+    MAX_QUERY_LINES = args.max_query_lines if args.max_query_lines else None
+    MASK = bool(args.mask)
+    NER_DEVICE = args.ner_device
+    PARE_CKPT = args.pare_ckpt
     
     # Update derived config
-    PARE_CKPT = os.path.join(ROOT_DIR, "HFMRE", "ckpt", "bert-base-uncased_258_16_4_2e-5_772_nyt10m_sep_na.pth.tar")
     OPENNRE_ROOT = os.path.join(ROOT_DIR, "OpenNRE")
     OPENNRE_CKPT = os.path.join(ROOT_DIR, "OpenNRE", "ckpt_3", "nyt10m_pcnn_att.pth.tar")
     OPENNRE_GLOVE_WORD2ID = os.path.join(ROOT_DIR, "OpenNRE", "pretrain", "glove", "glove.6B.50d_word2id.json")
@@ -374,6 +457,8 @@ if __name__ == "__main__":
     with open(FILTERED_PATH, "r") as f:
         lines = f.readlines()
         for i, line in tqdm(enumerate(lines), desc="Loading training data"):
+            if MAX_TRAIN_LINES is not None and i >= MAX_TRAIN_LINES:
+                break
             line = line.strip()
             try:
                 inst = json.loads(line)
@@ -387,6 +472,8 @@ if __name__ == "__main__":
     with open(QUERY_PATH, "r") as f:
         lines = f.readlines()
         for i, line in tqdm(enumerate(lines), desc="Loading queries"):
+            if MAX_QUERY_LINES is not None and i >= MAX_QUERY_LINES:
+                break
             line = line.strip()
             try:
                 inst = json.loads(line)
@@ -439,7 +526,10 @@ if __name__ == "__main__":
     with open(PARE_TOP_FILE, "r") as f:
         for line in f:
             d = json.loads(line)
-            idpredrep[int(d["entpair"][0])//2].append((d["relation"], d["score"]))
+            q_idx = int(d["entpair"][0]) // 2
+            if q_idx < 0 or q_idx >= len(idpredrep):
+                continue
+            idpredrep[q_idx].append((d["relation"], d["score"]))
 
     # Sort and take top-k predictions
     for i in range(len(query_whole)):

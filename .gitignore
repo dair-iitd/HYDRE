@@ -8,6 +8,7 @@ __pycache__/
 # Data and Models
 nyt10m/
 wiki20m/
+datasets/
 HFMRE/ckpt/
 HFMRE/benchmark/
 OpenNRE/ckpt_3/
@@ -17,6 +18,13 @@ OpenNRE/benchmark/
 *.pth.tar
 *.npy
 *.pt
+*.jsonl
+*.json
+*.txt
+!datasets/
+!datasets/nyt10m/
+!datasets/nyt10m/eng_Latn_final.jsonl
+!pare_data_en_example_bags.jsonl
 together_out/
 llama_out/
 

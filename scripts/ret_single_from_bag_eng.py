@@ -277,6 +277,7 @@ if __name__ == "__main__":
     parser.add_argument("--bag_file", type=str, required=True, help="Output from stage 2")
     parser.add_argument("--out_dir", type=str, required=True)
     parser.add_argument("--rel2id_path", type=str, default=os.path.join(ROOT_DIR, "nyt10m", "nyt10m_rel2id.json"))
+    parser.add_argument("--pare_ckpt", type=str, default=PARE_CKPT, help="PARE checkpoint for sentence selection")
     parser.add_argument("--lang", type=str, default="en")
     
     args = parser.parse_args()
@@ -285,13 +286,19 @@ if __name__ == "__main__":
     OUT_DIR = args.out_dir
     REL2ID_PATH = args.rel2id_path
     LANG = args.lang
+    PARE_CKPT = args.pare_ckpt
     
     # Update derived config
-    PARE_CKPT = os.path.join(ROOT_DIR, "HFMRE", "ckpt", "bert-base-uncased_258_16_4_2e-5_772_nyt10m_sep_na.pth.tar")
     OPENNRE_ROOT = os.path.join(ROOT_DIR, "OpenNRE")
     OPENNRE_CKPT = os.path.join(ROOT_DIR, "OpenNRE", "ckpt_3", "nyt10m_pcnn_att.pth.tar")
     OPENNRE_GLOVE_WORD2ID = os.path.join(ROOT_DIR, "OpenNRE", "pretrain", "glove", "glove.6B.50d_word2id.json")
     OPENNRE_GLOVE_MAT = os.path.join(ROOT_DIR, "OpenNRE", "pretrain", "glove", "glove.6B.50d_mat.npy")
+
+    if not os.path.exists(PARE_CKPT):
+        raise FileNotFoundError(
+            f"PARE checkpoint not found at: {PARE_CKPT}. "
+            "Place the checkpoint there or pass --pare_ckpt to point to it."
+        )
 
     print("=" * 60)
     print("HYDRE SINGLE SENTENCE SELECTION - ENGLISH")
