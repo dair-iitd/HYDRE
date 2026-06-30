@@ -322,6 +322,34 @@ def retrieve_top_k_sets_helper2(queries, doc_bags, k, idpredrep, rel2id, idx):
     # Load pre-computed BERT scores
     bert_scores = torch.load(f"bert_scores_{LANG}_{os.path.basename(RETRIEVAL_MODEL_NAME)}_{MASK}_{idx}_sent_bag_prompt.pt")
     
+    # Validate score tensor shape — catches 1D/2D tensors before they produce cryptic errors.
+    if bert_scores.ndim != 3:
+        raise ValueError(
+            f"BERT scores tensor has unexpected shape: {bert_scores.shape}. "
+            f"Expected 3D tensor (n_queries, n_docs, n_relations). "
+            f"n_relations should be {len(rel2id)}. "
+            f"This usually means the Stage 2 script returned a 1D or 2D tensor "
+            f"(e.g., missing the query dimension or relation dimension). "
+            f"Check that compute_bertscore_for_query returns a tensor of shape "
+            f"(len(queries), len(train_bags), {len(rel2id)})."
+        )
+    n_queries, n_docs, n_relations = bert_scores.shape
+    if n_relations != len(rel2id):
+        raise ValueError(
+            f"BERT scores tensor has {n_relations} relations but rel2id has {len(rel2id)} entries. "
+            f"Checkpoint and rel2id file may be mismatched (e.g., NYT vs Wiki checkpoint)."
+        )
+    if n_queries != len(queries):
+        raise ValueError(
+            f"BERT scores tensor has {n_queries} queries but {len(queries)} queries were passed. "
+            f"Check that the query file used for Stage 2 matches the one passed here."
+        )
+    if n_docs != len(doc_bags):
+        raise ValueError(
+            f"BERT scores tensor has {n_docs} documents but {len(doc_bags)} doc_bags were passed. "
+            f"Check that the training data used for Stage 2 matches the one passed here."
+        )
+    
     # Prepare arguments for parallel processing
     sort_order = []
     for j, query in enumerate(tqdm(queries, desc="Preprocess for Retrieving top-k sets")):
